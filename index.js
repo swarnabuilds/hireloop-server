@@ -1,14 +1,14 @@
-import express from 'express'
-import cors from 'cors'
-import 'dotenv/config'
-import { MongoClient, ObjectId } from 'mongodb';
+import express from "express";
+import cors from "cors";
+import "dotenv/config";
+import { MongoClient, ObjectId } from "mongodb";
 
 const app = express();
-const port = process.env.PORT ||  5000;
+const port = process.env.PORT || 5000;
 
 //middleware
-app.use(cors())
-app.use(express.json())
+app.use(cors());
+app.use(express.json());
 
 const client = new MongoClient(process.env.MONGO_URI);
 export async function connectToMongoDB() {
@@ -21,14 +21,14 @@ export async function connectToMongoDB() {
   }
 }
 const connectedClient = await connectToMongoDB();
-const database = connectedClient.db('hireloopdb');
-const users = database.collection("user")
+const database = connectedClient.db("hireloopdb");
+const users = database.collection("user");
 
-const jobsCollection = database.collection("jobs")
+const jobsCollection = database.collection("jobs");
 
-//jobs related api 
+//jobs related api
 
-//create job 
+//create job
 app.post("/jobs", async (req, res) => {
   try {
     const jobData = req.body;
@@ -40,7 +40,6 @@ app.post("/jobs", async (req, res) => {
       message: "Job created successfully",
       insertedId: result.insertedId,
     });
-
   } catch (error) {
     console.error("Create Job Error:", error);
 
@@ -51,65 +50,111 @@ app.post("/jobs", async (req, res) => {
   }
 });
 
-app.get('/jobs', async(req, res) => {
-  const cursor = jobsCollection.find({})
-    const result = await cursor.toArray()
-  res.send(result);
+
+
+app.get('/jobs', async (req, res) => {
+  try {
+    // 1. Extract query parameters from the request URL
+    const { search, category, jobType, location, isRemote } = req.query;
+
+    // 2. Initialize an empty query object
+    const query = {};
+
+    // 3. If a search keyword is provided, apply global search across multiple fields using $or
+    if (search) {
+      const searchRegex = { $regex: search, $options: "i" };
+      query.$or = [
+        { title: searchRegex },
+        { qualifications: searchRegex },
+        { location: searchRegex },
+        { companyName: searchRegex }
+      ];
+    }
+
+    // 4. If category filter is provided, add it to the query
+    if (category) {
+      query.category = { $regex: category, $options: "i" };
+    }
+
+    // 5. If jobType filter is provided, add it to the query
+    if (jobType) {
+      query.jobType = { $regex: jobType, $options: "i" };
+    }
+
+    // 6. If location filter is provided, add it to the query
+    if (location) {
+      query.location = { $regex: location, $options: "i" };
+    }
+
+    // 7. If isRemote filter is provided, convert string to boolean and add to query
+    if (isRemote !== undefined && isRemote !== "") {
+      query.isRemote = isRemote === "true";
+    }
+
+    // 💡 এখানে ম্যাজিক হয়: 
+    // যদি কোনো সার্চ বা ফিল্টার না থাকে, তবে query অবজেক্টটি খালি ({}) থাকবে। 
+    // ফলে jobsCollection.find({}) ডাটাবেজের সব জব একসাথে ফেচ করে নিয়ে আসবে!
+    const cursor = jobsCollection.find(query);
+    const result = await cursor.toArray();
+    
+    // 8. Send the result back to the client
+    res.send(result);
+
+  } catch (error) {
+    console.error("Error fetching jobs:", error);
+    res.status(500).send({ error: "Failed to fetch jobs" });
+  }
 });
+
 
 // job delete
-app.delete('/jobs/:id', async (req, res) => {
-    const id = req.params.id; 
-    try {
-        const query = { _id: new ObjectId(id) };
-        const result = await jobsCollection.deleteOne(query);
-        
-        res.send(result);
-    } catch (error) {
-        console.error("Error deleting job:", error);
-        res.status(500).send({ error: "Failed to delete job" });
-    }
+app.delete("/jobs/:id", async (req, res) => {
+  const id = req.params.id;
+  try {
+    const query = { _id: new ObjectId(id) };
+    const result = await jobsCollection.deleteOne(query);
+
+    res.send(result);
+  } catch (error) {
+    console.error("Error deleting job:", error);
+    res.status(500).send({ error: "Failed to delete job" });
+  }
 });
 
-//job edit 
-app.patch('/jobs/:id', async (req, res) => {
-    const id = req.params.id;
-    const updatedData = req.body;
-    
-    try {
-        const filter = { _id: new ObjectId(id) };
-        
-        // একদম শর্টকাটে সরাসরি req.body সেট করে দেওয়া
-        const updateDoc = { $set: updatedData };
+//job edit
+app.patch("/jobs/:id", async (req, res) => {
+  const id = req.params.id;
+  const updatedData = req.body;
 
-        const result = await jobsCollection.updateOne(filter, updateDoc);
-        res.send(result);
-    } catch (error) {
-        console.error("Error updating job:", error);
-        res.status(500).send({ error: "Failed to update job" });
-    }
+  try {
+    const filter = { _id: new ObjectId(id) };
+
+    // একদম শর্টকাটে সরাসরি req.body সেট করে দেওয়া
+    const updateDoc = { $set: updatedData };
+
+    const result = await jobsCollection.updateOne(filter, updateDoc);
+    res.send(result);
+  } catch (error) {
+    console.error("Error updating job:", error);
+    res.status(500).send({ error: "Failed to update job" });
+  }
 });
 
 //jobs details
-app.get('/jobs/:id', async (req, res) => {
+app.get("/jobs/:id", async (req, res) => {
   const id = req.params.id;
   const query = { _id: new ObjectId(id) };
   const result = await jobsCollection.findOne(query);
   res.send(result);
 });
 
-
-
-
-
-app.get('/', (req, res) => {
-  res.send('Hello World!');
+app.get("/", (req, res) => {
+  res.send("Hello World!");
 });
 
-
-app.get('/users', async(req, res) => {
-    const cursor = users.find({})
-    const result = await cursor.toArray()
+app.get("/users", async (req, res) => {
+  const cursor = users.find({});
+  const result = await cursor.toArray();
   res.send(result);
 });
 
