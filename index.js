@@ -1,4 +1,4 @@
-import express from "express";
+import express, { application } from "express";
 import cors from "cors";
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
@@ -25,6 +25,7 @@ const database = connectedClient.db("hireloopdb");
 const users = database.collection("user");
 
 const jobsCollection = database.collection("jobs");
+const applicationaCollection = database.collection("applications")
 
 //jobs related api
 
@@ -156,6 +157,55 @@ app.get("/users", async (req, res) => {
   const cursor = users.find({});
   const result = await cursor.toArray();
   res.send(result);
+});
+
+
+//application related api
+app.post('/applications', async (req, res) => {
+  const application = req.body;
+  
+  // কোন ইউজার কোন জবে আবেদন করেছে সেই তথ্য যুক্ত করা
+  const newApplication = {
+    ...application,
+    appliedAt: new Date()
+  };
+
+  const result = await applicationaCollection.insertOne(newApplication);
+  res.send(result);
+});
+
+
+// Get applications by userId
+app.get('/applications', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    let query = {};
+    if (userId) {
+      query = { userId: userId };
+    }
+    const applications = await applicationaCollection.find(query).toArray();
+    res.send(applications);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+//count application job
+app.get('/applications/count', async (req, res) => {
+  try {
+    const jobId = req.query.jobId;
+    let query = {};
+    
+    if (jobId) {
+      query = { jobId: jobId };
+    }
+
+    const count = await applicationaCollection.countDocuments(query);
+    res.send({ success: true, count });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
 });
 
 app.listen(port, () => {
