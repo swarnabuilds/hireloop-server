@@ -2,6 +2,8 @@ import express, { application } from "express";
 import cors from "cors";
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
+import Stripe from "stripe";
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -25,7 +27,8 @@ const database = connectedClient.db("hireloopdb");
 const users = database.collection("user");
 
 const jobsCollection = database.collection("jobs");
-const applicationaCollection = database.collection("applications")
+const applicationaCollection = database.collection("applications");
+const paymentsCollection = database.collection("payments");
 
 //jobs related api
 
@@ -51,9 +54,7 @@ app.post("/jobs", async (req, res) => {
   }
 });
 
-
-
-app.get('/jobs', async (req, res) => {
+app.get("/jobs", async (req, res) => {
   try {
     // 1. Extract query parameters from the request URL
     const { search, category, jobType, location, isRemote } = req.query;
@@ -68,7 +69,7 @@ app.get('/jobs', async (req, res) => {
         { title: searchRegex },
         { qualifications: searchRegex },
         { location: searchRegex },
-        { companyName: searchRegex }
+        { companyName: searchRegex },
       ];
     }
 
@@ -92,21 +93,19 @@ app.get('/jobs', async (req, res) => {
       query.isRemote = isRemote === "true";
     }
 
-    // 💡 এখানে ম্যাজিক হয়: 
-    // যদি কোনো সার্চ বা ফিল্টার না থাকে, তবে query অবজেক্টটি খালি ({}) থাকবে। 
+    // 💡 এখানে ম্যাজিক হয়:
+    // যদি কোনো সার্চ বা ফিল্টার না থাকে, তবে query অবজেক্টটি খালি ({}) থাকবে।
     // ফলে jobsCollection.find({}) ডাটাবেজের সব জব একসাথে ফেচ করে নিয়ে আসবে!
     const cursor = jobsCollection.find(query);
     const result = await cursor.toArray();
-    
+
     // 8. Send the result back to the client
     res.send(result);
-
   } catch (error) {
     console.error("Error fetching jobs:", error);
     res.status(500).send({ error: "Failed to fetch jobs" });
   }
 });
-
 
 // job delete
 app.delete("/jobs/:id", async (req, res) => {
@@ -159,24 +158,22 @@ app.get("/users", async (req, res) => {
   res.send(result);
 });
 
-
 //application related api
-app.post('/applications', async (req, res) => {
+app.post("/applications", async (req, res) => {
   const application = req.body;
-  
+
   // কোন ইউজার কোন জবে আবেদন করেছে সেই তথ্য যুক্ত করা
   const newApplication = {
     ...application,
-    appliedAt: new Date()
+    appliedAt: new Date(),
   };
 
   const result = await applicationaCollection.insertOne(newApplication);
   res.send(result);
 });
 
-
 // Get applications by userId
-app.get('/applications', async (req, res) => {
+app.get("/applications", async (req, res) => {
   try {
     const userId = req.query.userId;
     let query = {};
@@ -190,23 +187,70 @@ app.get('/applications', async (req, res) => {
   }
 });
 
-
 //count application job
-app.get('/applications/count', async (req, res) => {
-  try {
-    const jobId = req.query.jobId;
-    let query = {};
-    
-    if (jobId) {
-      query = { jobId: jobId };
+app.get("/applications/count", async (req, res) => {
+  const { userId } = req.query;
+  const query = userId ? { userId } : {};
+  const count = await applicationaCollection.countDocuments(query);
+  res.send({ count });
+});
+
+//payment related api
+app.post("/payments/checkout-verify", async (req, res) => {
+  const { sessionId } = req.body;
+
+  if (!sessionId) {
+    return res.send({ success: false, message: "Session ID is required" });
+  }
+
+  const { status, payment_status, customer_email, metadata, payment_intent } =
+    await stripe.checkout.sessions.retrieve(sessionId);
+
+  if (status === "complete" && payment_status === "paid") {
+
+    const sessionQuery = { sessionId };
+    const existingPayment = await paymentsCollection.findOne(sessionQuery);
+
+    if (existingPayment) {
+      return res.send({ success: false, message: "Payment Aleady Verified" });
     }
 
-    const count = await applicationaCollection.countDocuments(query);
-    res.send({ success: true, count });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const payment = {
+      sessionId,
+      status,
+      payment_status,
+      customer_email,
+      userId: metadata.userId,
+      paayment_date: new Date(),
+      payment_intent,
+    };
+
+    const result = await paymentsCollection.insertOne(payment);
+
+    //updte the user table
+    const query = { _id: new ObjectId(metadata.userId) };
+
+    const updatedDoc = {
+      $set: {
+        premium: true,
+      },
+    };
+
+    const updatedResult = await users.updateOne(query, updatedDoc);
+    res.send({ success: true, result, updatedResult });
+    return;
   }
+
+  res.send({ success: false, message: "Payment Veification Faield" });
 });
+
+//for one user payment one 
+app.get('/users/:id/premium', async(req, res) => {
+  const id = req.params.id
+  const query = {_id: new ObjectId(id)}
+  const result = await users.findOne(query, {projection: {premium: 1}})
+  res.send(result)
+})
 
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
