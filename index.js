@@ -73,6 +73,10 @@ app.get("/jobs", async (req, res) => {
       ];
     }
 
+    if(req.query.recruiterId) {
+      query.recruiterId = req.query.recruiterId
+    }
+
     // 4. If category filter is provided, add it to the query
     if (category) {
       query.category = { $regex: category, $options: "i" };
