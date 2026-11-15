@@ -37,7 +37,18 @@ app.post("/jobs", async (req, res) => {
   try {
     const jobData = req.body;
 
-    const result = await jobsCollection.insertOne(jobData);
+    // ডেডলাইন চেক করে ডাইনামিকালি স্ট্যাটাস নির্ধারণ (যদি ডেডলাইন পার হয়ে যায় তবে Expired, নতুবা Active)
+    const isExpired = jobData.deadline
+      ? new Date(jobData.deadline) < new Date()
+      : false;
+
+    const newJob = {
+      ...jobData,
+      status: jobData.status || (isExpired ? "Expired" : "Active"), // ফ্রন্টএন্ড থেকে না আসলেও ডাটাবেজে সেভ হবে
+      createdAt: new Date().toISOString(),
+    };
+
+    const result = await jobsCollection.insertOne(newJob);
 
     res.status(201).send({
       success: true,
@@ -73,8 +84,8 @@ app.get("/jobs", async (req, res) => {
       ];
     }
 
-    if(req.query.recruiterId) {
-      query.recruiterId = req.query.recruiterId
+    if (req.query.recruiterId) {
+      query.recruiterId = req.query.recruiterId;
     }
 
     // 4. If category filter is provided, add it to the query
@@ -162,32 +173,99 @@ app.get("/users", async (req, res) => {
   res.send(result);
 });
 
-//application related api
+// application related api
+// application related api
 app.post("/applications", async (req, res) => {
-  const application = req.body;
+  try {
+    const application = req.body;
+    let foundJob = null;
 
-  // কোন ইউজার কোন জবে আবেদন করেছে সেই তথ্য যুক্ত করা
-  const newApplication = {
-    ...application,
-    appliedAt: new Date(),
-  };
+    // ১. jobId দিয়ে জব খোঁজা (ObjectId অথবা String উভয় ফরম্যাট সাপোর্ট করার জন্য)
+    try {
+      foundJob = await jobsCollection.findOne({
+        _id: new ObjectId(application.jobId),
+      });
+    } catch (err) {
+      foundJob = await jobsCollection.findOne({
+        _id: application.jobId,
+      });
+    }
 
-  const result = await applicationaCollection.insertOne(newApplication);
-  res.send(result);
+    // ২. নতুন অ্যাপ্লিকেশন অবজেক্ট তৈরি যেখানে recruiterId বাধ্যতামূলকভাবে থাকবে
+    const newApplication = {
+      ...application,
+      recruiterId: foundJob
+        ? foundJob.recruiterId || foundJob.employerId || null
+        : null,
+      appliedAt: new Date(),
+    };
+
+    const result = await applicationaCollection.insertOne(newApplication);
+    res.send(result);
+  } catch (error) {
+    console.error("Apply Error:", error);
+    res.status(500).send({ success: false, message: error.message });
+  }
 });
 
 // Get applications by userId
+// Get applications by userId or recruiterId
 app.get("/applications", async (req, res) => {
   try {
-    const userId = req.query.userId;
+    const { userId, recruiterId } = req.query;
     let query = {};
+
     if (userId) {
-      query = { userId: userId };
+      query.userId = userId;
     }
+
+    // রিক্রুটার আইডি দিয়ে ফিল্টার করার জন্য এটি যোগ করো
+    if (recruiterId) {
+      query.recruiterId = recruiterId;
+    }
+
     const applications = await applicationaCollection.find(query).toArray();
     res.send(applications);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+//  application status update API
+app.patch("/applications/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { status } = req.body;
+
+    if (!status) {
+      return res
+        .status(400)
+        .send({ success: false, message: "Status is required" });
+    }
+
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: { status: status },
+    };
+
+    const result = await applicationaCollection.updateOne(filter, updateDoc);
+
+    if (result.matchedCount === 0) {
+      return res
+        .status(404)
+        .send({ success: false, message: "Application not found" });
+    }
+
+    res.send({
+      success: true,
+      message: "Status updated successfully",
+      result,
+    });
+  } catch (error) {
+    console.error("Update Application Status Error:", error);
+    res
+      .status(500)
+      .send({ success: false, message: "Failed to update status" });
   }
 });
 
@@ -211,7 +289,6 @@ app.post("/payments/checkout-verify", async (req, res) => {
     await stripe.checkout.sessions.retrieve(sessionId);
 
   if (status === "complete" && payment_status === "paid") {
-
     const sessionQuery = { sessionId };
     const existingPayment = await paymentsCollection.findOne(sessionQuery);
 
@@ -248,14 +325,30 @@ app.post("/payments/checkout-verify", async (req, res) => {
   res.send({ success: false, message: "Payment Veification Faield" });
 });
 
-//for one user payment one 
-app.get('/users/:id/premium', async(req, res) => {
-  const id = req.params.id
-  const query = {_id: new ObjectId(id)}
-  const result = await users.findOne(query, {projection: {premium: 1}})
-  res.send(result)
-})
+//for one user payment one
+app.get("/users/:id/premium", async (req, res) => {
+  const id = req.params.id;
+  const query = { _id: new ObjectId(id) };
+  const result = await users.findOne(query, { projection: { premium: 1 } });
+  res.send(result);
+});
+
+
+//user role select for admin pannel
+app.patch("/users/:id/role", async (req, res) => {
+  const id = req.params.id;
+  const { role } = req.body;
+  const query = { _id: new ObjectId(id) };
+  const updateDoc = {
+    $set: {
+      role: role,
+    },
+  };
+  const result = await users.updateOne(query, updateDoc);
+  res.send(result);
+});
+
 
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+  console.log(`server running on port ${port}`);
 });
