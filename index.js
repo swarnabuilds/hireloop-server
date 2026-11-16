@@ -12,6 +12,10 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+const myLogger = (req, res, next) => {
+  next();
+};
+
 const client = new MongoClient(process.env.MONGO_URI);
 export async function connectToMongoDB() {
   try {
@@ -25,13 +29,52 @@ export async function connectToMongoDB() {
 const connectedClient = await connectToMongoDB();
 const database = connectedClient.db("hireloopdb");
 const users = database.collection("user");
+const sessions = database.collection("session");
 
 const jobsCollection = database.collection("jobs");
 const applicationaCollection = database.collection("applications");
 const paymentsCollection = database.collection("payments");
 
-//jobs related api
+//middlewre
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  // console.log(authHeader)
 
+  //check header exist or not
+  if (!authHeader) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  const token = authHeader.split(" ")[1];
+  // console.log(token)
+  if (!token) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  const query = { token };
+  const session = await sessions.findOne(query);
+  if (!session) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  const userId = session.userId;
+  const userQuery = { _id: new ObjectId(userId) }
+  const user = await users.findOne(userQuery)
+
+  if(!user){
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  req.user = user;
+
+  next()
+};
+
+//jobs related api
 //create job
 app.post("/jobs", async (req, res) => {
   try {
@@ -174,7 +217,6 @@ app.get("/users", async (req, res) => {
 });
 
 // application related api
-// application related api
 app.post("/applications", async (req, res) => {
   try {
     const application = req.body;
@@ -208,20 +250,49 @@ app.post("/applications", async (req, res) => {
   }
 });
 
-// Get applications by userId
 // Get applications by userId or recruiterId
-app.get("/applications", async (req, res) => {
+app.get("/applications", verifyToken, async (req, res) => {
   try {
-    const { userId, recruiterId } = req.query;
+    const { userId, recruiterId, jobId } = req.query;
     let query = {};
 
     if (userId) {
       query.userId = userId;
     }
 
-    // রিক্রুটার আইডি দিয়ে ফিল্টার করার জন্য এটি যোগ করো
+    if (jobId) {
+      const jobQuery = { _id: new ObjectId(jobId) };
+      const job = await jobsCollection.findOne(jobQuery);
+      
+      // ভিডিওর আদলে সিকিউরিটি চেক
+      if (job && job.recruiterId !== req.user._id.toString() && req.user.role !== 'admin') {
+        res.status(403).send({ message: 'Forbidden' });
+        return;
+      }
+      
+      query.jobId = jobId;
+    }
+
+    // যদি রিক্রুটার আইডি দিয়ে কুয়েরি করা হয়
     if (recruiterId) {
-      query.recruiterId = recruiterId;
+      // রিক্রুটারের জন্য এক্সট্রা সিকিউরিটি চেক
+      if (recruiterId !== req.user._id.toString() && req.user.role !== 'admin') {
+        res.status(403).send({ message: 'Forbidden' });
+        return;
+      }
+
+      // ১. প্রথমে দেখে নাও এই রিক্রুটার কোন কোন জবগুলো পোস্ট করেছে
+      const recruiterJobs = await jobsCollection.find({ recruiterId: recruiterId }).toArray();
+      const jobIds = recruiterJobs.map(job => job._id.toString()); // অথবা শুধু job._id যদি স্ট্রিং হয়
+
+      // ২. এখন অ্যাপ্লিকেশন কালেকশন থেকে এমন সব অ্যাপ্লিকেশন খোঁজো যেগুলো এই জবগুলোর আন্ডারে পড়েছে 
+      // অথবা সরাসরি অ্যাপ্লিকেশনের ভেতরে recruiterId ম্যাচ করে
+      query = {
+        $or: [
+          { recruiterId: recruiterId },
+          { jobId: { $in: jobIds } }
+        ]
+      };
     }
 
     const applications = await applicationaCollection.find(query).toArray();
@@ -230,6 +301,8 @@ app.get("/applications", async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+
 
 //  application status update API
 app.patch("/applications/:id", async (req, res) => {
@@ -333,7 +406,6 @@ app.get("/users/:id/premium", async (req, res) => {
   res.send(result);
 });
 
-
 //user role select for admin pannel
 app.patch("/users/:id/role", async (req, res) => {
   const id = req.params.id;
@@ -347,7 +419,6 @@ app.patch("/users/:id/role", async (req, res) => {
   const result = await users.updateOne(query, updateDoc);
   res.send(result);
 });
-
 
 app.listen(port, () => {
   console.log(`server running on port ${port}`);
